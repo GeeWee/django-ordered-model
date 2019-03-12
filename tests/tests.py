@@ -17,8 +17,8 @@ from tests.models import (
     MultipleChoiceQuestion,
     ItemGroup,
     GroupedItem,
-    TestUser
-)
+    TestUser,
+    CascadedParentModel, CascadedOrderedModel)
 
 
 class OrderGenerationTests(TestCase):
@@ -720,6 +720,33 @@ class PolymorpicOrderGenerationTests(TestCase):
         self.assertEqual(o2.order, 2)
         m1.refresh_from_db()
         self.assertEqual(m1.order, 3)
+
+
+class TestCascadedDelete(TestCase):
+
+    def test_that_model_when_deleted_by_cascade_still_maintains_ordering(self):
+        parent_for_order_0_child = CascadedParentModel.objects.create()
+        child_with_order_0 = CascadedOrderedModel.objects.create(parent=parent_for_order_0_child)
+
+        parent__for_order_1_child = CascadedParentModel.objects.create()
+        child_with_order_1 = CascadedOrderedModel.objects.create(parent=parent__for_order_1_child)
+
+        parent_for_order_2_child = CascadedParentModel.objects.create()
+        child_with_order_2 = CascadedOrderedModel.objects.create(parent=parent_for_order_2_child)
+
+        # Delete positition 1 parent, now there's a hole, which child_with_order_2 should take
+        parent__for_order_1_child.delete()
+
+        # Refresh children from db
+        child_with_order_0.refresh_from_db()
+        child_with_order_2.refresh_from_db()
+
+        print(repr(CascadedOrderedModel.objects.all()))
+
+        # Assert the hole has been filled
+        self.assertEqual(child_with_order_0.order, 0)
+        self.assertEqual(child_with_order_2.order, 1)
+
 
 
 class TestFixInOrdering(TestCase):

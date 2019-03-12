@@ -97,6 +97,11 @@ class OrderedModelBase(models.Model):
             update_kwargs.update(extra) 
         qs.filter(**{self.order_field_name + '__gt': getattr(self, self.order_field_name)})\
           .update(**update_kwargs)
+
+        # Set an instance attribute for our post_delete signal to read, so that we prevent moving the model more
+        # than once. Documented more in signals.py
+        self._was_deleted_via_delete_method = True
+
         super(OrderedModelBase, self).delete(*args, **kwargs)
 
     def swap(self, replacement):
