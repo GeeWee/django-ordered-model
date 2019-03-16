@@ -19,9 +19,11 @@ def on_ordered_model_delete(sender, instance, **kwargs):
     if not issubclass(sender, OrderedModelBase) or getattr(instance, '_was_deleted_via_delete_method', None):
         return
 
-    # Below contains similar logic to OrderedModelBase.delete
     qs = instance.get_ordering_queryset()
     update_kwargs = {instance.order_field_name: F(instance.order_field_name) - 1}
+    # Here we don't use a subQuery to get the value of the model, as it's already been deleted at this point
+    # in the process, so we're actually unable to. We'll just have to pray that no other object has taken its
+    # place from here until it got deleted.
     qs.filter(
         **{instance.order_field_name + "__gt": getattr(instance, instance.order_field_name)}
     ).update(**update_kwargs)

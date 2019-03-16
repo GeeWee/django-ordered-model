@@ -741,8 +741,6 @@ class TestCascadedDelete(TestCase):
         child_with_order_0.refresh_from_db()
         child_with_order_2.refresh_from_db()
 
-        print(repr(CascadedOrderedModel.objects.all()))
-
         # Assert the hole has been filled
         self.assertEqual(child_with_order_0.order, 0)
         self.assertEqual(child_with_order_2.order, 1)

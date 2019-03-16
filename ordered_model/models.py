@@ -50,6 +50,22 @@ class OrderedModelBase(models.Model):
             self._get_order_with_respect_to() == reference._get_order_with_respect_to()
         )
 
+    def _get_current_position_query(self):
+        """
+        This function creates a SubQuery for .filter that uses the models *current* position in the database,
+        and not the one Django last retrieved, to avoid inconsistencies. This might break on the use-case that you
+        fetch a model, change its position and then try to .swap() it, and expect it to use the current position of
+        the model.
+
+        Necessary to prevent race conditions, where our model has been
+        moved in the database since being fetched - while it thinks it's in position 2 it's actually in position 3, 4,
+        etc. See https://github.com/bfirsh/django-ordered-model/issues/184
+
+        :return: a SubQuery that allows us to get the right value
+        """
+        current_order_value_in_db = self._get_class_for_ordering_queryset().objects.filter(pk=self.pk).values(self.order_field_name)
+        return Subquery(current_order_value_in_db)
+
     def get_ordering_queryset(self, qs=None):
         qs = qs or self._get_class_for_ordering_queryset().objects.all()
         order_with_respect_to = self.order_with_respect_to
@@ -58,7 +74,10 @@ class OrderedModelBase(models.Model):
             qs = qs.filter(**dict(order_values))
 
         # We need to lock the rows we're interested in, to ensure that we don't end up with deadlocks
-        # when two processes try to update the same rows concurrently.
+        # when two processes try to update the same rows concurrently. We should also order
+        # them to ensure we're locking them in the same deterministic way.
+        qs.order_by(self.order_field_name)
+
         # See https://github.com/bfirsh/django-ordered-model/issues/184
         qs = qs.select_for_update()
         # Django does not generate the SELECT ... FOR UPDATE if the queryset is simply .updated(), we need
@@ -72,7 +91,7 @@ class OrderedModelBase(models.Model):
         Get previous element in this object's ordered stack.
         """
         return self.get_ordering_queryset().filter(
-            **{self.order_field_name + '__lt': getattr(self, self.order_field_name)}
+            **{self.order_field_name + '__lt': self._get_current_position_query()}
         ).order_by('-' + self.order_field_name).first()
 
     def next(self):
@@ -80,7 +99,7 @@ class OrderedModelBase(models.Model):
         Get next element in this object's ordered stack.
         """
         return self.get_ordering_queryset().filter(
-            **{self.order_field_name + '__gt': getattr(self, self.order_field_name)}
+            **{self.order_field_name + '__gt': self._get_current_position_query()}
         ).first()
 
     def save(self, *args, **kwargs):
@@ -95,7 +114,7 @@ class OrderedModelBase(models.Model):
         extra = kwargs.pop('extra_update', None)
         if extra:
             update_kwargs.update(extra) 
-        qs.filter(**{self.order_field_name + '__gt': getattr(self, self.order_field_name)})\
+        qs.filter(**{self.order_field_name + '__gt': self._get_current_position_query()})\
           .update(**update_kwargs)
 
         # Set an instance attribute for our post_delete signal to read, so that we prevent moving the model more
@@ -148,25 +167,18 @@ class OrderedModelBase(models.Model):
             return
         qs = self.get_ordering_queryset()
 
-        """
-        Get current value in database of our object. Necessary to prevent race conditions, where our model has been
-        moved in the database since being fetched - while it thinks it's in position 2 it's actually in position 3, 4,
-        etc. See https://github.com/bfirsh/django-ordered-model/issues/184
-        """
-        current_order_value_in_db = self._get_class_for_ordering_queryset().objects.filter(pk=self.pk).values(self.order_field_name)
-
         if getattr(self, self.order_field_name) > order:
             update_kwargs = {self.order_field_name: F(self.order_field_name) + 1}
             if extra_update:
                 update_kwargs.update(extra_update)
-            qs.filter(**{self.order_field_name + '__lt': Subquery(current_order_value_in_db),
+            qs.filter(**{self.order_field_name + '__lt': self._get_current_position_query(),
                          self.order_field_name + '__gte': order})\
               .update(**update_kwargs)
         else:
             update_kwargs = {self.order_field_name: F(self.order_field_name) - 1}
             if extra_update:
                 update_kwargs.update(extra_update)
-            qs.filter(**{self.order_field_name + '__gt': Subquery(current_order_value_in_db),
+            qs.filter(**{self.order_field_name + '__gt': self._get_current_position_query(),
                          self.order_field_name + '__lte': order})\
               .update(**update_kwargs)
         setattr(self, self.order_field_name, order)
@@ -188,7 +200,7 @@ class OrderedModelBase(models.Model):
             o = getattr(ref, self.order_field_name)
         else:
             o = self.get_ordering_queryset()\
-                    .filter(**{self.order_field_name + '__lt': getattr(ref, self.order_field_name)})\
+                    .filter(**{self.order_field_name + '__lt': self._get_current_position_query()})\
                     .aggregate(Max(self.order_field_name))\
                     .get(self.order_field_name + '__max') or 0
         self.to(o, extra_update=extra_update)
@@ -207,7 +219,7 @@ class OrderedModelBase(models.Model):
             return
         if getattr(self, self.order_field_name) > getattr(ref, self.order_field_name):
             o = self.get_ordering_queryset()\
-                    .filter(**{self.order_field_name + '__gt': getattr(ref, self.order_field_name)})\
+                    .filter(**{self.order_field_name + '__gt': self._get_current_position_query()})\
                     .aggregate(Min(self.order_field_name))\
                     .get(self.order_field_name + '__min') or 0
         else:
